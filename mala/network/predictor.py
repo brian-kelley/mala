@@ -8,6 +8,9 @@ import torch
 from mala.common.parallelizer import printout, get_rank, barrier
 from mala.network.runner import Runner
 
+from torch_mlir import torchscript
+from torch_mlir.compiler_utils import TensorPlaceholder
+from lapis import KokkosBackend
 
 class Predictor(Runner):
     """
@@ -128,79 +131,94 @@ class Predictor(Runner):
         self.data.target_calculator.invalidate_target()
 
         # Calculate descriptors.
-        time_before = perf_counter()
-        snap_descriptors, local_size = (
-            self.data.descriptor_calculator.calculate_from_atoms(
-                atoms, self.data.grid_dimension
-            )
-        )
-        printout(
-            "Time for descriptor calculation: {:.8f}s".format(
-                perf_counter() - time_before
-            ),
-            min_verbosity=2,
-        )
+        #time_before = perf_counter()
+        #print("Calling calculate_from_atoms...")
+        #snap_descriptors, local_size = (
+        #    self.data.descriptor_calculator.calculate_from_atoms(
+        #        atoms, self.data.grid_dimension
+        #    )
+        #)
+        #print("Done")
+        #printout(
+        #    "Time for descriptor calculation: {:.8f}s".format(
+        #        perf_counter() - time_before
+        #    ),
+        #    min_verbosity=2,
+        #)
 
         # Provide info from current snapshot to target calculator.
-        self.data.target_calculator.read_additional_calculation_data(
-            [atoms, self.data.grid_dimension], "atoms+grid"
-        )
-        feature_length = self.data.descriptor_calculator.feature_size
+        #print("Reading additional calculation data")
+        #self.data.target_calculator.read_additional_calculation_data(
+        #    [atoms, self.data.grid_dimension], "atoms+grid"
+        #)
+        #feature_length = self.data.descriptor_calculator.feature_size
 
         # The actual calculation of the LDOS from the descriptors depends
         # on whether we run in parallel or serial. In the former case,
         # each batch is forwarded individually (for now), in the latter
         # case, everything is forwarded at once.
-        if self.parameters._configuration["mpi"]:
-            if gather_ldos is True:
-                snap_descriptors = (
-                    self.data.descriptor_calculator.gather_descriptors(
-                        snap_descriptors
-                    )
-                )
+        #if self.parameters._configuration["mpi"]:
+        #    print("MPI path")
+        #    if gather_ldos is True:
+        #        snap_descriptors = (
+        #            self.data.descriptor_calculator.gather_descriptors(
+        #                snap_descriptors
+        #            )
+        #        )
 
-                # Just entering the forwarding function to wait for the
-                # main rank further down.
-                if get_rank() != 0:
-                    self._forward_snap_descriptors(snap_descriptors, 0)
-                    return None
+        #        # Just entering the forwarding function to wait for the
+        #        # main rank further down.
+        #        if get_rank() != 0:
+        #            self._forward_snap_descriptors(snap_descriptors, 0)
+        #            return None
 
-            else:
-                if self.data.descriptor_calculator.descriptors_contain_xyz:
-                    self.data.target_calculator.local_grid = snap_descriptors[
-                        :, 0:3
-                    ].copy()
-                    self.data.target_calculator.y_planes = (
-                        self.data.descriptor_calculator.parameters.use_y_splitting
-                    )
-                    snap_descriptors = snap_descriptors[:, 6:]
-                    feature_length -= 3
-                else:
-                    raise Exception(
-                        "Cannot calculate the local grid without "
-                        "calculating the xyz positions of the "
-                        "descriptors. Please revise your "
-                        "script. The local grid is crucial"
-                        " for parallel inference"
-                    )
+        #    else:
+        #        if self.data.descriptor_calculator.descriptors_contain_xyz:
+        #            self.data.target_calculator.local_grid = snap_descriptors[
+        #                :, 0:3
+        #            ].copy()
+        #            self.data.target_calculator.y_planes = (
+        #                self.data.descriptor_calculator.parameters.use_y_splitting
+        #            )
+        #            snap_descriptors = snap_descriptors[:, 6:]
+        #            feature_length -= 3
+        #        else:
+        #            raise Exception(
+        #                "Cannot calculate the local grid without "
+        #                "calculating the xyz positions of the "
+        #                "descriptors. Please revise your "
+        #                "script. The local grid is crucial"
+        #                " for parallel inference"
+        #            )
 
-                snap_descriptors = torch.from_numpy(snap_descriptors).float()
-                self.data.input_data_scaler.transform(snap_descriptors)
-                return self._forward_snap_descriptors(
-                    snap_descriptors, local_size
-                )
+        #        snap_descriptors = torch.from_numpy(snap_descriptors).float()
+        #        self.data.input_data_scaler.transform(snap_descriptors)
+        #        return self._forward_snap_descriptors(
+        #            snap_descriptors, local_size
+        #        )
 
-        if get_rank() == 0:
-            if self.data.descriptor_calculator.descriptors_contain_xyz:
-                snap_descriptors = snap_descriptors[:, :, :, 3:]
-                feature_length -= 3
+        #if get_rank() == 0:
+        #if self.data.descriptor_calculator.descriptors_contain_xyz:
+        #    snap_descriptors = snap_descriptors[:, :, :, 3:]
+        #    feature_length -= 3
 
-            snap_descriptors = snap_descriptors.reshape(
-                [self.data.grid_size, feature_length]
-            )
-            snap_descriptors = torch.from_numpy(snap_descriptors).float()
-            self.data.input_data_scaler.transform(snap_descriptors)
-            return self._forward_snap_descriptors(snap_descriptors)
+        #snap_descriptors = snap_descriptors.reshape(
+        #    [self.data.grid_size, feature_length]
+        #)
+        #snap_descriptors = torch.from_numpy(snap_descriptors).float()
+        #print("Calling input_data_scaler.transform") 
+        #self.data.input_data_scaler.transform(snap_descriptors)
+        #print("Done")
+
+        # Read preprocessed snap_descriptors from file to speed up runs
+        snap_descriptors = np.zeros((8748, 91), dtype=np.float32)
+        with open('snap_descriptors.txt', 'r') as f:
+            for i in range(8748):
+                for j in range(91):
+                    snap_descriptors[i, j] = float(f.readline())
+
+        snap_descriptors = torch.from_numpy(snap_descriptors).float()
+        return self._forward_snap_descriptors(snap_descriptors)
 
     def _forward_snap_descriptors(
         self, snap_descriptors, local_data_size=None
@@ -230,6 +248,7 @@ class Predictor(Runner):
         # Ensure the Network is on the correct device.
         # This line is necessary because GPU acceleration may have been
         # activated AFTER loading a model.
+
         time_before = perf_counter()
         self.network.to(self.network.params._configuration["device"])
 
@@ -239,39 +258,85 @@ class Predictor(Runner):
             (local_data_size, self.data.target_calculator.feature_size)
         )
 
+        #    # TEMPORARY: output the preprocessed input tensor (snap_descriptors, 2D)
+        #    # to snap_descriptors.txt. One entry per line, row major. We know the shape
+        #    # ahead of time so no need to write the dimensions.
+        #    bmk_m = int(snap_descriptors.shape[0])
+        #    bmk_n = int(snap_descriptors.shape[1])
+        #    with open('snap_descriptors.txt', 'w') as f:
+        #        for i in range(bmk_m):
+        #            for j in range(bmk_n):
+        #                f.write(str(float(snap_descriptors[i][j])))
+        #                f.write('\n')
+
         # Only predict if there is something to predict.
         # Elsewise, we just wait at the barrier down below.
         if local_data_size > 0:
-            optimal_batch_size = self._correct_batch_size(
-                local_data_size, self.parameters.mini_batch_size
-            )
-            if optimal_batch_size != self.parameters.mini_batch_size:
-                printout(
-                    "Had to readjust batch size from",
-                    self.parameters.mini_batch_size,
-                    "to",
-                    optimal_batch_size,
-                    min_verbosity=0,
-                )
-                self.parameters.mini_batch_size = optimal_batch_size
+            optimal_batch_size = local_data_size
+            #optimal_batch_size = self._correct_batch_size(
+            #    local_data_size, self.parameters.mini_batch_size
+            #)
+            #if optimal_batch_size != self.parameters.mini_batch_size:
+            #    printout(
+            #        "Had to readjust batch size from",
+            #        self.parameters.mini_batch_size,
+            #        "to",
+            #        optimal_batch_size,
+            #        min_verbosity=0,
+            #    )
+            #    self.parameters.mini_batch_size = optimal_batch_size
 
-            self._number_of_batches_per_snapshot = int(
-                local_data_size / self.parameters.mini_batch_size
+            #print("Executing on local_data_size =", local_data_size)
+            #self._number_of_batches_per_snapshot = int(
+            #    local_data_size / self.parameters.mini_batch_size
+            #)
+
+            batchPlaceholder = TensorPlaceholder([snap_descriptors.shape[0], snap_descriptors.shape[1]], torch.float32)
+            #print("Converting network to MLIR")
+            #kModule = torchscript.compile(self.network, batchPlaceholder, output_type="linalg-on-tensors")
+            #kBackend = KokkosBackend.KokkosBackend()
+            #knetwork = kBackend.compile(kModule)
+            #print("Finished compiling with LAPIS.")
+
+            print("Will execute torch inference on device:", self.parameters._configuration["device"])
+
+            inputs = snap_descriptors.to(
+                self.parameters._configuration["device"]
             )
 
-            for i in range(0, self._number_of_batches_per_snapshot):
-                sl = slice(
-                    i * self.parameters.mini_batch_size,
-                    (i + 1) * self.parameters.mini_batch_size,
-                )
-                inputs = snap_descriptors[sl].to(
-                    self.parameters._configuration["device"]
-                )
-                predicted_outputs[sl] = (
-                    self.data.output_data_scaler.inverse_transform(
-                        self.network(inputs).to("cpu"), as_numpy=True
-                    )
-                )
+            # Torch warmup call, which also generates the output we actually return
+            resultTorch = self.network(inputs).to("cpu")
+
+            trials = 10000
+            print("Running torch inference in a loop...")
+            time_start = perf_counter()
+
+            if torch.cuda.is_available():
+                for i in range(trials):
+                    result = self.network(inputs)
+                    torch.cuda.synchronize()
+            else:
+                for i in range(trials):
+                    result = self.network(inputs)
+            time_end = perf_counter()
+            print("Time averaged over", trials, "trials:", (time_end - time_start) / trials)
+
+            predicted_outputs = self.data.output_data_scaler.inverse_transform(resultTorch, as_numpy=True)
+
+            #predicted_outputs[sl] = (
+            #    self.data.output_data_scaler.inverse_transform(
+            #        self.network(inputs).to("cpu"), as_numpy=True
+            #    )
+            #)
+
+            #resultLAPIS = torch.tensor(knetwork.forward(inputs.numpy()), dtype=torch.float32)
+            #predicted_outputs = self.data.output_data_scaler.inverse_transform(resultLAPIS, as_numpy=True)
+
+            #predicted_outputs[sl] = (
+            #    self.data.output_data_scaler.inverse_transform(
+            #        self.network(inputs).to("cpu"), as_numpy=True
+            #    )
+            #)
 
             # Restricting the actual quantities to physical meaningful values,
             # i.e. restricting the (L)DOS to positive values.
@@ -286,3 +351,4 @@ class Predictor(Runner):
             min_verbosity=2,
         )
         return predicted_outputs
+
