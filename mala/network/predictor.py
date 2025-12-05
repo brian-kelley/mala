@@ -261,13 +261,15 @@ class Predictor(Runner):
         #    # TEMPORARY: output the preprocessed input tensor (snap_descriptors, 2D)
         #    # to snap_descriptors.txt. One entry per line, row major. We know the shape
         #    # ahead of time so no need to write the dimensions.
-        #    bmk_m = int(snap_descriptors.shape[0])
-        #    bmk_n = int(snap_descriptors.shape[1])
-        #    with open('snap_descriptors.txt', 'w') as f:
-        #        for i in range(bmk_m):
-        #            for j in range(bmk_n):
-        #                f.write(str(float(snap_descriptors[i][j])))
-        #                f.write('\n')
+        print("Hello: dumping input descriptors to snap_descriptors.txt, row-major")
+        bmk_m = int(snap_descriptors.shape[0])
+        bmk_n = int(snap_descriptors.shape[1])
+        print(bmk_m, "x", bmk_n)
+        with open('snap_descriptors.txt', 'w') as f:
+            for i in range(bmk_m):
+                for j in range(bmk_n):
+                    f.write(str(float(snap_descriptors[i][j])))
+                    f.write('\n')
 
         # Only predict if there is something to predict.
         # Elsewise, we just wait at the barrier down below.
@@ -306,6 +308,15 @@ class Predictor(Runner):
 
             # Torch warmup call, which also generates the output we actually return
             resultTorch = self.network(inputs).to("cpu")
+            print("Hello: dumping output predictions to snap_predictions.txt, row-major")
+            bmk_m = int(resultTorch.shape[0])
+            bmk_n = int(resultTorch.shape[1])
+            print(bmk_m, "x", bmk_n)
+            with open('snap_predictions.txt', 'w') as f:
+                for i in range(bmk_m):
+                    for j in range(bmk_n):
+                        f.write(str(float(resultTorch[i][j])))
+                        f.write('\n')
 
             trials = 10000
             print("Running torch inference in a loop...")
